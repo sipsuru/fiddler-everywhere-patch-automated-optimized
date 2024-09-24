@@ -1,0 +1,168 @@
+name: Download required Patched
+
+on:
+  workflow_call:
+    inputs:
+      fe_version:
+        type: string
+        required: true
+        description: "FE version to be patched"
+
+jobs:
+  download-yukihana-patch:
+    runs-on: windows-latest
+    env: 
+      PATCHING_VERSION: ${{ inputs.fe_version }}
+      
+    outputs:
+      is-compatible-cont: ${{ steps.is-compatible-cont.outputs.is-compatible-cont }}
+      yukihana-fiddler-name: ${{ steps.yukihana-fiddler-name.outputs.yukihana-fiddler-name }}
+
+    steps:
+      - name: Compare PATCHING_VERSION with 5.17.0
+        id: PATCHING_VERSION_check
+        run: |
+          $scrapedVersion = $env:PATCHING_VERSION
+          $compareVersion = "5.17.0"
+   
+          if (-not [string]::IsNullOrEmpty($scrapedVersion)) {
+              if ([version]$scrapedVersion -ge [version]$compareVersion) {
+                  echo "IS_COMPATIBLE_CONT=true" | Out-File -Append -FilePath $env:GITHUB_ENV
+              } else {
+                  echo "IS_COMPATIBLE_CONT=false" | Out-File -Append -FilePath $env:GITHUB_ENV
+              }
+          } else {
+              echo "IS_COMPATIBLE_CONT=false" | Out-File -Append -FilePath $env:GITHUB_ENV
+          }
+        
+        shell: pwsh
+
+      - name: Set IS_COMPATIBLE_CONT as Output
+        id: is-compatible-cont
+        run: echo "is-compatible-cont=${{ env.IS_COMPATIBLE_CONT }}" | Out-File -Append -FilePath $env:GITHUB_OUTPUT
+        
+      - name: Set Yukihana fiddler name (>= 5.17.0)
+        if: env.IS_COMPATIBLE_CONT == 'true'
+        run: echo "YUKIHANA_FIDDLER_NAME=fiddler" | Out-File -Append -FilePath $env:GITHUB_ENV
+
+      - name: Set Yukihana fiddler name (< 5.17.0)
+        if: env.IS_COMPATIBLE_CONT == 'false'
+        run: echo "YUKIHANA_FIDDLER_NAME=libfiddler" | Out-File -Append -FilePath $env:GITHUB_ENV
+
+      - name: Set YUKIHANA_FIDDLER_NAME as Output
+        id: yukihana-fiddler-name
+        run: echo "yukihana-fiddler-name=${{ env.YUKIHANA_FIDDLER_NAME }}" | Out-File -Append -FilePath $env:GITHUB_OUTPUT
+
+      - name: Create yukihana directory
+        run: |
+          if (-Not (Test-Path "yukihana")) {
+            New-Item -ItemType Directory -Path "yukihana"
+          }
+        shell: pwsh
+
+      - name: Set Yukihana Release (>= 5.17.0)
+        if: env.IS_COMPATIBLE_CONT == 'true'
+        run: echo "YUKIHANA_RELEASE=continuous" | Out-File -Append -FilePath $env:GITHUB_ENV
+
+      - name: Set Yukihana Release (< 5.17.0) 
+        if: env.IS_COMPATIBLE_CONT == 'false'
+        run: echo "YUKIHANA_RELEASE=v1.0.9" | Out-File -Append -FilePath $env:GITHUB_ENV
+
+      - name: Download Yukihana Patch
+        run: |
+          try {
+            # Build the download URLs
+            $yukihanaFiddlerUrl = "https://github.com/project-yukihana/Yukihana-patch/releases/download/$env:YUKIHANA_RELEASE/yukihana-$env:YUKIHANA_FIDDLER_NAME-win32-x86_64-$env:YUKIHANA_RELEASE.dll"
+            $yukihanaHostPolicyUrl = "https://github.com/project-yukihana/Yukihana-patch/releases/download/$env:YUKIHANA_RELEASE/yukihana-hostpolicy-win32-x86_64-$env:YUKIHANA_RELEASE.dll"
+            
+            # Print the URLs to ensure they're correct
+            Write-Host "Downloading files from $env:YUKIHANA_RELEASE"
+            Write-Host "Yukihana Fiddler URL: $yukihanaFiddlerUrl"
+            Write-Host "Yukihana HostPolicy URL: $yukihanaHostPolicyUrl"
+
+            # Download the files
+            Invoke-WebRequest -Uri $yukihanaFiddlerUrl -OutFile "yukihana\$env:YUKIHANA_FIDDLER_NAME.dll"
+            Invoke-WebRequest -Uri $yukihanaHostPolicyUrl -OutFile "yukihana\hostpolicy.dll"
+          }
+          catch {
+            Write-Error "Failed to download the patch files. Error details: $_"
+            exit 1
+          }
+        shell: pwsh
+      
+      - name: Upload yukihana folder as an artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: yukihana-patch
+          path: yukihana/
+          if-no-files-found: error
+
+  download-msojocs-server:
+    runs-on: windows-latest
+
+    steps:
+      - name: Set up Git
+        run: |
+          git init
+          git remote add origin https://github.com/msojocs/fiddler-everywhere-enhance.git
+          git config core.sparseCheckout true
+
+      - name: Configure sparse-checkout to download the server directory
+        run: |
+          echo "server" | Out-File -Append -FilePath .git\info\sparse-checkout
+          git pull origin master
+
+      - name: Move the downloaded directory to the target folder
+        run: |
+          mkdir -p msojocs
+          Move-Item -Path server -Destination msojocs/
+
+      - name: List files in the msojocs/server directory
+        run: Get-ChildItem -Path msojocs\server
+
+      - name: Upload msojocs folder as an artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: msojocs-patch
+          path: msojocs/
+          if-no-files-found: error
+
+  download-fiddler-everywhere:
+    runs-on: windows-latest
+
+    needs: 
+      - scrape_fe_version
+
+    steps:
+      - name: Build URL & Download
+        run: |
+          # Retrieve the scraped version from the previous step
+          $scrapedVersion = "${{ inputs.fe_version }}"
+          
+          # Check if the scraped version is available
+          if (-not [string]::IsNullOrEmpty($scrapedVersion)) {
+            $downloadUrl = "https://downloads.getfiddler.com/win/Fiddler%20Everywhere%20$scrapedVersion.exe"
+          
+            Write-Host "Download URL: $downloadUrl"
+
+            Invoke-WebRequest -Uri $downloadUrl -OutFile "FiddlerEverywhereSetup.exe"
+            
+          } else {
+            Write-Host "PATCHING_VERSION is empty or not set"
+            exit 1
+          }
+        shell: pwsh
+
+      - name: Extract exe 
+        run: 7z x "FiddlerEverywhereSetup.exe" -ofe_extracted
+
+      - name: Extract app64 
+        run: 7z x "fe_extracted/`$PLUGINSDIR/app-64.7z" -ofe_app64
+        shell: pwsh
+        
+      - name: Upload Fiddler Everywhere Extracted folder as an artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: fe_app64
+          path: fe_app64/
+          if-no-files-found: error
