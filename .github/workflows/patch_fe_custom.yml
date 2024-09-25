@@ -1,0 +1,15 @@
+name: Patch Fiddler Everywhere Custom Version
+
+on: 
+  workflow_dispatch:
+    inputs:
+      version_to_patch:
+        description: 'The Version You Want to Patch'
+        required: true
+        default: '5.17.0'
+
+env:
+  VERSION_TO_PATCH: ${{ github.event.inputs.version_to_patch }}
+
+jobs:
+  
